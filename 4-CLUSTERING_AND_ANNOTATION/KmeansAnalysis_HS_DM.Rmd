@@ -1,0 +1,474 @@
+---
+title: "KMeans Cluster Analysis for Transcriptomics"
+output: 
+  pdf_document: 
+    fig_caption: yes
+    keep_tex: yes
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+urlcolor: blue
+documentclass: article
+classoption: a4paper
+header-includes: 
+- \usepackage{graphicx}
+- \usepackage{float}
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+---
+
+  
+```{r setup, include=FALSE}
+outputDir <- "/data/Project_BeatrizMartinez_RNASeqIntegration/DE.Analysis.EmbryonicAdultGuauque/REPEATED_DE_ANALYSIS_2019_11_27/DiffAll.genes.edgeR.limma.n10.cpm1.BATCH/KMEANS/OUTPUT"
+dir.create(file.path(outputDir,"Plots"),showWarnings = T,recursive = T)
+
+knitr::opts_chunk$set(
+	echo = FALSE,
+	fig.align = "center",
+	fig.path = file.path(outputDir,"Plots/"),
+	fig.pos = "H",
+	message = FALSE,
+	warning = FALSE,
+	dev = c("jpeg", "postscript"),
+	dpi = 300,
+	comment=NA
+)
+library(biomaRt)
+library(ggplot2)
+library(kableExtra)
+library(gplots)
+library(WriteXLS,quietly=T, warn.conflicts=F, verbose=F)
+library(RColorBrewer)
+library(reshape2)
+library(gtools)
+library(ComplexHeatmap)
+options(stringsAsFactors = FALSE)
+
+setwd(outputDir)
+
+```
+
+```{r Colors, message=FALSE, warning=FALSE, include=FALSE}
+
+color.list <- c(brewer.pal(12, "Paired"),brewer.pal(12, "Set3"),brewer.pal(8, "Pastel2"),colorRampPalette(c("grey20","grey70"))(4))
+# sampleCols <- c("#F2CE95","#70E0ED","#BFA9E1","#ED84A8")
+# sampleCols for 9 samples !!!
+# sampleCols <- c(brewer.pal(8,"Dark2"),"black")
+# sampleCols for 6 samples !!!
+sampleCols <- c(brewer.pal(6,"Dark2"))
+```
+
+```{r Functions, echo=FALSE, message=FALSE, warning=FALSE}
+
+anyOverlap <- function (data, category.column, element.column, description.column, sort = T, ptype = "min") {
+  if (sort) {
+    catIds <- names(sort(table(data[,category.column]),decreasing = T))  
+  } else {
+    catIds <- names(table(data[,category.column]))
+  }
+  
+  if (length(catIds) <= 1) return(NULL)
+  ov <- data.frame(descriptionOne=c(),categoryOne=c(),elementOne=c(),overlap=c(),elementTwo=c(),descriptionTwo=c(),categoryTwo=c(),commonElements=c(),stringsAsFactors = F)
+  om <- matrix(data=0
+               ,nrow = length(catIds)
+               ,ncol = length(catIds)
+               ,dimnames = list("rows"=mixedsort(as.character(catIds)),"cols"=mixedsort(as.character(catIds)))
+  )
+  for (i in 1:length(catIds)) {
+    # message(catIds[i])
+    descriptionOne <- data[which(data[,category.column] == catIds[i])[1],description.column]
+    elementOne <- data[which(data[,category.column] == catIds[i]),element.column]
+    
+    if (i+1 <= length(catIds)) {
+      for (b in (i+1):length(catIds)) {
+        
+        descriptionTwo <- data[which(data[,category.column] == catIds[b])[1],description.column]
+        elementTwo <- data[which(data[,category.column] == catIds[b]),element.column]
+        
+        elementIntersect <- intersect(elementOne,elementTwo)
+        intersectList <- gsub(" ","",paste(elementIntersect,sep="",collapse=","))
+        
+        ov <- rbind(ov,data.frame(descriptionOne,catIds[i],length(elementOne),length(elementIntersect),length(elementTwo),descriptionTwo,catIds[b],intersectList))
+        if (ptype == "min") {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/min(c(length(elementOne),length(elementTwo))))  
+        } else if (ptype == 1) {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/length(elementOne))  
+        } else if (ptype == 2) {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/length(elementTwo))  
+        } else if (ptype == "max") {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/max(c(length(elementOne),length(elementTwo))))  
+        }
+        
+        om[as.character(catIds[i]),as.character(catIds[i])] <- 100
+        om[as.character(catIds[b]),as.character(catIds[b])] <- 100
+      }
+    }
+  }
+  colnames(ov) <- c("descriptionOne","categoryOne","elementOne","overlap","elementTwo","descriptionTwo","categoryTwo","commonElements")
+  return(list(otable=ov,omatrix=om))
+}
+
+color.gradient <- function(x, colors=c("red","yellow","green"), colsteps=50, space="Lab") {
+  minv <- abs(min(x))
+  maxv <- abs(max(x))
+  if (minv > maxv) {
+    maxv = minv
+  } else {
+    minv = maxv
+  }
+  return( colorRampPalette(colors, space = space) (colsteps) [ findInterval(x, seq(-minv,maxv, length.out=colsteps)) ] )
+}
+
+```
+
+```{r bioMart, echo=FALSE, message=FALSE, warning=FALSE}
+
+archive <- "may2015.archive"
+shortSpecies <- "hsapiens"
+fullSpecies <- "Homo_sapiens"
+
+mart=useMart(biomart="ENSEMBL_MART_ENSEMBL",
+             host=paste(archive,".ensembl.org",sep=""),dataset=paste(shortSpecies,"_gene_ensembl",sep = ""))
+
+annotatedGenes <- getBM(attributes = c("ensembl_gene_id","external_gene_name")
+                 ,uniqueRows = T
+                 ,mart = mart)
+
+
+# annotatedGenes <- getBM(attributes = c("ensembl_gene_id","mgi_symbol")
+#                  ,uniqueRows = T
+#                  ,mart = mart)
+
+# Using "mgi_symbol" results in EnsemblGeneIDs associated to several names, as it happened with humans:
+# annotatedGenes[which(duplicated(annotatedGenes$ensembl_gene_id)),]
+# as well as EnsemblGeneIDs associated no names as seen with:
+# annotatedGenes[which(annotatedGenes$mgi_symbol==""),]
+# To eliminate cases without names
+annotatedGenes<-annotatedGenes[which(annotatedGenes$mgi_symbol!=""),]
+# To eliminate dupicates
+annotatedGenes<-annotatedGenes[-which(duplicated(annotatedGenes$ensembl_gene_id)),]
+
+# Without removing duplicates the following command fails
+rownames(annotatedGenes) <- annotatedGenes$ensembl_gene_id
+
+# It is necessary to change the name of gene name variable for later
+names(annotatedGenes)<-c("ensembl_gene_id","external_gene_name")
+
+geneCardUrl <- "http://www.genecards.org/cgi-bin/carddisp.pl?gene="
+ensemblUrl <-  paste("http://",archive,".ensembl.org/",fullSpecies,"/Gene/Summary?db=core;g=",sep="")
+
+```
+
+# Transcriptomics Kmeans Analysis
+
+## Input Data
+
+log2 normalized counts with a pseudcount of 1 from ....
+
+```{r loadExprData, message=FALSE, warning=FALSE, include=FALSE}
+
+# normCounts <- read.delim(file.path(outputDir,"../Data/NormCounts.txt"),header=T,sep="\t")
+# normCounts <- read.delim("../NormCounts_AVERAGED_log2_DEG_logFC_0.5.txt",header=T,sep="\t")
+# normCounts <- read.delim("../NormCounts_AVERAGED_log2_DEG_logFC_0.5_notRescued.txt",header=T,sep="\t")
+# normCounts <- read.delim("../NormCounts_AVERAGED_log2_DEG_logFC_0.5_7108.txt",header=T,sep="\t")
+   
+normCounts <- read.delim("../NormCountsAveraged.txt",header=T,sep="\t")
+
+
+#Reordering samples for the situation with 6 samples
+# normCounts <- normCounts[,c("ID","Name","L929Balbc","S3T3","FMI12","FC2C12","Rho0L929","Rho3T3")]
+
+#Reordering samples for the situation with 9 samples
+# normCounts <- normCounts[,c("ID","Name","L929Balbc","S3T3","FMI12","FC2C12","FC2C12AOX","Rho0AOX","Rho0NA","Rho0L929","Rho3T3")]
+
+
+rownames(normCounts) <- normCounts$ID
+
+sampleNames <- colnames(normCounts)[3:ncol(normCounts)]
+
+# The following steps are not required here because counts have already been filtered and log transformed
+# minCounts <- 30
+# minSamples <- 3
+# DEG.ix <- rowSums(normCounts[,sampleNames] >= minCounts) >= minSamples
+# normCountsFiltered <- log2(normCounts[DEG.ix,sampleNames]+1)
+
+# log2 transformation
+normCounts[,c(3:ncol(normCounts))] <- log2(normCounts[,c(3:ncol(normCounts))])
+
+normCountsFiltered <- normCounts
+dim(normCountsFiltered)
+
+```
+
+## Compute minimum number of clusters
+
+For Kmeans analysis we used scaled data to capture gene expression tendency profiles. To define the minimum number of clusters we compute the Sum Of Squeares in sequencial increase of clusters. The minimum number would be when reaching a plateau.
+
+```{r defineNClusters, echo=FALSE, fig.align="center", fig.cap="Proteomics absolute quantification Variability progression within clusters. \\href{./Plots/defineNClusters-1.jpeg}{defineNClusters-1.jpeg}", message=FALSE, warning=FALSE}
+
+expProfiles <-  t(scale(t(normCountsFiltered[,sampleNames])))
+sampleNames <- sampleNames
+
+# Determine number of clusters
+# A preliminary attempt with 30 centers rendered a plot that became horizontal only at the end.
+# I decided to try with 50
+# I would say that even using 100 the plateau was not reached clearly.
+# However, I decided to use 50, because 100 seemed too much.
+# In the second attempt, with only six cell type, I used 30 clusters.
+# maxCenters<-30
+maxCenters<-100
+wss <- (nrow(expProfiles[,sampleNames])-1)*sum(apply(expProfiles[,sampleNames],2,var))
+for (i in 1:maxCenters) wss[i] <- sum(kmeans(expProfiles, centers=i)$withinss)
+
+png("ClusterNumberOptimization_6_cell_types_19962_genes.png",1000,1000)
+par(mar=c(5,5,5,5))
+plot(1:maxCenters, wss, type="b", xlab="Number of Clusters", ylab="Within groups sum of squares",cex=1.5,cex.lab=2,cex.axis=1.5)
+dev.off()
+
+```
+
+```{r kmeansTranscriptomics, echo=FALSE, message=FALSE, warning=FALSE}
+
+expProfiles <-  t(scale(t(normCountsFiltered[,sampleNames])))
+
+#nc=20
+nc=50
+# nc=30
+set.seed(20)
+
+kmeans.trans=kmeans(expProfiles,nc,iter.max=2000,nstart=50)
+
+allTClusters <- cbind(
+  as.data.frame(expProfiles[names(sort(kmeans.trans$cluster)),])
+  ,cluster=paste("T",sort(kmeans.trans$cluster),sep="")
+)
+allTClusters$cluster <- factor(allTClusters$cluster)
+allTClusters$cluster <- factor(allTClusters$cluster,levels = mixedsort(levels(allTClusters$cluster)))
+allTClusters$ensembl_gene_id <- rownames(allTClusters)
+allTClusters$GeneName <- annotatedGenes[match(allTClusters$ensembl_gene_id,annotatedGenes$ensembl_gene_id),"external_gene_name"]
+allTClusters[is.na(allTClusters$GeneName),"GeneName"] <- allTClusters[is.na(allTClusters$GeneName),"ensembl_gene_id"]
+
+# Cluster Stats
+cct <- table(allTClusters$cluster)
+cct <- cct[mixedsort(names(cct))]
+
+print(cct)
+
+knitr::kable(t(as.matrix(cct)), caption = "Number of Genes per Cluster") %>%
+  kable_styling(latex_options = c("hold_position"),position = "center")
+
+```
+
+\blandscape
+
+```{r plotKmeansClusters, fig.cap=paste("Transcriptomics Kmeans Clusters.", "\\href{./Plots/plotKmeansClusters-1.jpeg}{plotKmeansClusters-1.jpeg}",sep=""), fig.height=9, fig.width=14, echo=FALSE, message=FALSE, warning=FALSE}
+
+countsColumns <- sampleNames
+GeneIDColumn <- c("ensembl_gene_id")
+ClusterColumn <- c("cluster")
+
+ExpressionValueName <- "normCounts"
+
+variableName <- "Sample"
+
+ta <- melt(allTClusters[mixedorder(allTClusters$cluster),c(countsColumns,GeneIDColumn,ClusterColumn)],value.name=ExpressionValueName, variable.name = variableName)
+
+nc <- length(levels(allTClusters$cluster))
+
+# Computes the average of ExpressionValueName at each variableName
+ag <- aggregate(ta,by = list(ta[,ClusterColumn],ta[,variableName]),FUN = mean)
+
+ag[,ClusterColumn] <- NULL
+ag[,GeneIDColumn] <- NULL
+ag[,variableName] <- NULL
+colnames(ag) <- c(ClusterColumn,variableName,paste("mean",ExpressionValueName,sep=""))
+
+png("ClusterProfiles_30.png",2000,1000)
+# png("ClusterProfiles_50.png",3000,1500)
+gp=ggplot(ta
+          ,aes(x=variableName,y=ExpressionValueName)
+          )
+gp + geom_line(aes(x=get(variableName), y=get(ExpressionValueName)
+                  ,color=rainbow(nc)[get(ClusterColumn)]
+                  ,group=get(GeneIDColumn)
+                  )
+              ,show.legend = F
+              ) +
+  geom_line(data=ag,aes(x=get(variableName), y=get(paste("mean",ExpressionValueName,sep=""))
+                  ,group=get(ClusterColumn)
+                  )
+              ,show.legend = F
+              ) +
+  facet_wrap( ~ get(ClusterColumn), scales="free")+theme(axis.text.x = element_text(angle = 90, hjust = 1, colour = sampleCols))
+dev.off()
+
+```
+
+\elandscape
+\newpage
+
+## Heatmap with annotated genes
+
+```{r HMapKmeansProteomicsScaledAbsQuantwoNA, echo=FALSE, fig.align="center", fig.cap=paste("K-means analysis of the proteins at Day 0 (Scaled Absolute Quantification Data). \\href{./Plots/HMapKmeansProteomicsScaledAbsQuantwoNA-",seq(3),".jpeg}{HMapKmeansProteomicsScaledAbsQuantwoNA-",seq(3),".jpeg}",sep=""), fig.asp=2, message=FALSE, warning=FALSE}
+
+colr <- rev(colorRampPalette(brewer.pal(11 , "Spectral" ))(100))
+
+clusters <- allTClusters
+
+counts <- clusters[,sampleNames]
+
+# mnames <- list()
+# mnames[["CM"]] <- c("MYH6","MYH7","TNNT2","TNNI3","TPM3","RYR2","ACTN2","MYL7"
+#                     ,"MYL3","TNNC1","TNNI1","NPPA","NPPB","TPM1","ATP2A2")
+# mnames[["MF"]] <- c("CD64","CD68","FCGR1A","FCGR2A","FCGR2B","FCGR2C","MRC1","ADGRE1","CD86","CCR2","CCR5","LAMP2"
+#                     ,"CD14","CD80","NOS2","TLR8","TLR2","TLR1","TLR4","TLR9","FCGR3A","FCGR3B","CD163","SIGLEC1"
+#                     ,"ITGAM","HLA-DRB1","HLA-DQB1","HLA-DRB1","C5AR1","SOCS3","CX3CR1","TIMD4"
+#                     ,"CSF1R","LGALS3","IL1R1","LY6C","HPGDS"
+#                     )
+# mnames[["EC"]] <- c("KDR","DLL4","ICAM2","GJA4","ESAM","EMCN","ERG","PECAM1","CDH5","CLDN5","VWF","FLT1"
+#                     ,"ENG","THSD1","SOX18","NPR1","DACH1")
+# mnames[["FB"]] <- c("LOX","COL1A1","COL1A2","DDR2","TNC","ALDH1A2","DCN","PDGFRA","TCF21")
+# 
+# ulmnames <- unlist(mnames)
+# manns <- annotatedGenes[match(ulmnames,annotatedGenes$external_gene_name),]
+# 
+# canns <- c(rep(sampleCols[1],length(mnames[["CM"]]))
+#            ,rep(sampleCols[2],length(mnames[["MF"]]))
+#            ,rep(sampleCols[3],length(mnames[["EC"]]))
+#            ,rep(sampleCols[4],length(mnames[["FB"]]))
+#            )
+# 
+# 
+# canns <- canns[!is.na(manns$ensembl_gene_id)]
+# manns <- manns[!is.na(manns$ensembl_gene_id),]
+
+# Heatmap(counts[rownames(clusters),]
+#         ,cluster_rows = F
+#         ,cluster_columns = F
+#         ,col = colr
+#         ,row_title_gp = gpar(fontsize = 8)
+#         ,row_title_rot = 0
+#         ,split = clusters$cluster
+#         ,column_names_gp=gpar(col=sampleCols)
+#         ,show_row_names = F
+#         ,show_heatmap_legend = T
+#         ,heatmap_legend_param = list(title = "Row Scaled log2NormCounts", labels = c("min", "", "","","max"))
+#         ) + rowAnnotation(link = row_anno_link(at = match(manns$ensembl_gene_id,rownames(clusters))
+#                                                , labels = manns$external_gene_name
+#                                                , link_width=unit(1,"cm")
+#                                                , labels_gp=gpar(col=canns)
+#                                                , extend=0.2
+#                           ), width=unit(3,"cm")
+#                           )
+png("ClusterHeatmaps_30.png",800,1000)
+# png("ClusterHeatmaps_50.png",1000,1300)
+Heatmap(counts[rownames(clusters),]
+        ,cluster_rows = F
+        ,cluster_columns = F
+#         ,col = colr
+        ,row_title_gp = gpar(fontsize = 8)
+#         ,row_title_rot = 0                      # In ComplexHeatmap v1.10.2
+        ,split = clusters$cluster
+        ,column_names_gp=gpar(col=sampleCols)
+        ,show_row_names = F
+        ,show_heatmap_legend = T
+        )
+dev.off()
+# Heatmap(counts[rownames(clusters),]
+#         ,cluster_rows = F
+#         ,cluster_columns = F
+#         ,col = colr
+#         ,column_names_gp=gpar(col=sampleCols)
+#         # ,split = sort(kmeans8.trans$cluster)
+#         ,show_row_names = F
+#         ,show_heatmap_legend = T
+#         ,heatmap_legend_param = list(title = "Row Scaled log2NormCounts", labels = c("min", "", "","","max"))
+#         ) + rowAnnotation(link = row_anno_link(at = match(manns$ensembl_gene_id,rownames(clusters))
+#                                                , labels = manns$external_gene_name
+#                                                , link_width=unit(1,"cm")
+#                                                , labels_gp=gpar(col=canns)
+#                                                , extend=1
+#                           ), width=unit(3,"cm")
+#                           )
+
+```
+
+## Write Output files
+
+```{r WriteTranscriptomicsClusterDataToFiles, echo=FALSE, message=FALSE, warning=FALSE}
+
+clusters <- allTClusters
+
+dir.kmeans <- file.path(outputDir,"kmeans")
+dir.create(dir.kmeans)
+
+tnc <- levels(clusters$cluster)
+nclusters <- length(tnc)
+
+geneNamesDF <- matrix("",ncol = nclusters
+                      ,nrow = max(table(clusters$cluster)))
+
+tde.files <-  data.frame(Desc=c(), File=c())
+
+tnc <- levels(clusters$cluster)
+
+colnames(geneNamesDF) <- tnc
+
+for (i in tnc){
+  
+    index=rownames(clusters)[which(clusters$cluster==i)]
+    
+    dummyTable <- clusters[index,]
+    
+    write.table(as.matrix(dummyTable)
+                ,file = file.path(dir.kmeans,paste("kmeansCluster",i,"_",nclusters,"_ExpProfiles.txt",sep=""))
+                ,quote=F
+                ,sep="\t"
+                ,row.names=F
+                )
+    
+    geneNames <- dummyTable[index,"GeneName"]
+    geneNames <- geneNames[!is.na(geneNames)]
+    geneNamesDF[1:length(geneNames),i] <- geneNames
+    
+    write.table(geneNames,
+                file = file.path(dir.kmeans,paste("kmeansCluster",i,"_",nclusters,"_GeneNames.txt",sep=""))
+                ,quote=F,sep="\t",row.names=F,col.names = F
+                )
+}
+
+geneNamesDF <- geneNamesDF[which(!rowSums(geneNamesDF == "") == nclusters),]
+
+write.table(as.matrix(geneNamesDF)
+            ,file = file.path(dir.kmeans,"..",paste("kmeansCluster_All_",nclusters,"_GeneNames.txt",sep=""))
+            ,quote = F
+            ,row.names = F
+            ,col.names = T
+            ,sep = "\t")
+
+tde.files <- rbind(tde.files,data.frame(Desc="David Names Lists",File=paste("kmeansCluster_All_",nclusters,"_GeneNames.txt",sep="")))
+
+write.table(
+  as.matrix(clusters)
+  ,file = file.path(dir.kmeans,"..",paste("kmeansCluster_All_",nclusters,"_ExpProfiles.txt",sep=""))
+  ,quote=F,sep="\t",row.names=F
+)
+
+clusters$ensembl_gene_id <- paste('=HYPERLINK("',ensemblUrl,clusters$ensembl_gene_id,'","',clusters$ensembl_gene_id,'")',sep="")
+
+clusters$GeneName <- paste('=HYPERLINK("',geneCardUrl,clusters$GeneName,'","',clusters$GeneName,'")',sep="")
+
+WriteXLS("clusters"
+         ,ExcelFileName = file.path(dir.kmeans,"..",paste("kmeansCluster_All_",nclusters,"_ExpProfiles.xlsx",sep=""))
+             ,SheetName="AllClusters",AutoFilter = T,BoldHeaderRow = T,FreezeRow = 1,FreezeCol = 1,verbose = F)
+
+tde.files <- rbind(tde.files,data.frame(Desc="Kmeans Clusters",File=paste("kmeansCluster_All_",nclusters,"_ExpProfiles.xlsx",sep="")))
+
+tde.files$File <- paste("[",tde.files$File,"]","(",tde.files$File,")",sep="")
+
+knitr::kable(tde.files, caption = "Files with tables per cluster") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"),position = "center","scale_down")
+
+```
+

@@ -1,0 +1,878 @@
+---
+title: "Functional Analysis for Transcriptomics Kmeans Clusters"
+output: 
+  pdf_document: 
+    fig_caption: yes
+    keep_tex: yes
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+urlcolor: blue
+documentclass: article
+classoption: a4paper
+header-includes: 
+- \usepackage{graphicx}
+- \usepackage{float}
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+---
+
+  
+```{r setup, include=FALSE}
+outputDir <- "/home/mjgomezr/ANALYSIS/JLPompa/DMacgrogan/BAVTAV/CLUSTERING/KMEANS_CLUSTERS_01/CLUSTERING_04"
+dir.create(file.path(outputDir,"Plots"),showWarnings = T,recursive = T)
+
+knitr::opts_chunk$set(
+	echo = FALSE,
+	fig.align = "center",
+	fig.path = file.path(outputDir,"Plots/"),
+	fig.pos = "H",
+	message = FALSE,
+	warning = FALSE,
+	dev = c("jpeg", "postscript"),
+	dpi = 300,
+	comment=NA
+)
+library(biomaRt)
+library(ggplot2)
+#library(heatmap3)
+#library(kableExtra)
+library(gplots)
+library(WriteXLS,quietly=T, warn.conflicts=F, verbose=F)
+library(RColorBrewer)
+library(reshape2)
+library(RDAVIDWebService)
+library(gtools)
+#library(ComplexHeatmap)
+source("./heatmap.3.R")
+options(stringsAsFactors = FALSE)
+
+setwd(outputDir)
+
+```
+
+```{r Colors, message=FALSE, warning=FALSE, include=FALSE}
+
+color.list <- c(brewer.pal(12, "Paired"),brewer.pal(12, "Set3"),brewer.pal(8, "Pastel2"),colorRampPalette(c("grey20","grey70"))(4))
+# sampleCols <- c("#F2CE95","#70E0ED","#BFA9E1","#ED84A8")
+# sampleCols for 7 samples !!!
+# sampleCols <- c(brewer.pal(7,"Dark2"))
+# sampleCols for 6 samples !!!
+sampleCols <- c(brewer.pal(6,"Dark2"))
+
+```
+
+```{r Functions, echo=FALSE, message=FALSE, warning=FALSE}
+
+anyOverlap <- function (data, category.column, element.column, description.column, sort = T, ptype = "min") {
+  if (sort) {
+    catIds <- names(sort(table(data[,category.column]),decreasing = T))  
+  } else {
+    catIds <- names(table(data[,category.column]))
+  }
+  
+  if (length(catIds) <= 1) return(NULL)
+  ov <- data.frame(descriptionOne=c(),categoryOne=c(),elementOne=c(),overlap=c(),elementTwo=c(),descriptionTwo=c(),categoryTwo=c(),commonElements=c(),stringsAsFactors = F)
+  om <- matrix(data=0
+               ,nrow = length(catIds)
+               ,ncol = length(catIds)
+               ,dimnames = list("rows"=mixedsort(as.character(catIds)),"cols"=mixedsort(as.character(catIds)))
+  )
+  for (i in 1:length(catIds)) {
+    # message(catIds[i])
+    descriptionOne <- data[which(data[,category.column] == catIds[i])[1],description.column]
+    elementOne <- data[which(data[,category.column] == catIds[i]),element.column]
+    
+    if (i+1 <= length(catIds)) {
+      for (b in (i+1):length(catIds)) {
+        
+        descriptionTwo <- data[which(data[,category.column] == catIds[b])[1],description.column]
+        elementTwo <- data[which(data[,category.column] == catIds[b]),element.column]
+        
+        elementIntersect <- intersect(elementOne,elementTwo)
+        intersectList <- gsub(" ","",paste(elementIntersect,sep="",collapse=","))
+        
+        ov <- rbind(ov,data.frame(descriptionOne,catIds[i],length(elementOne),length(elementIntersect),length(elementTwo),descriptionTwo,catIds[b],intersectList))
+        if (ptype == "min") {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/min(c(length(elementOne),length(elementTwo))))  
+        } else if (ptype == 1) {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/length(elementOne))  
+        } else if (ptype == 2) {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/length(elementTwo))  
+        } else if (ptype == "max") {
+          om[as.character(catIds[i]),as.character(catIds[b])] <- round(length(elementIntersect)*100/max(c(length(elementOne),length(elementTwo))))  
+        }
+        
+        om[as.character(catIds[i]),as.character(catIds[i])] <- 100
+        om[as.character(catIds[b]),as.character(catIds[b])] <- 100
+      }
+    }
+  }
+  colnames(ov) <- c("descriptionOne","categoryOne","elementOne","overlap","elementTwo","descriptionTwo","categoryTwo","commonElements")
+  return(list(otable=ov,omatrix=om))
+}
+
+color.gradient <- function(x, colors=c("red","yellow","green"), colsteps=50, space="Lab") {
+  minv <- abs(min(x))
+  maxv <- abs(max(x))
+  if (minv > maxv) {
+    maxv = minv
+  } else {
+    minv = maxv
+  }
+  return( colorRampPalette(colors, space = space) (colsteps) [ findInterval(x, seq(-minv,maxv, length.out=colsteps)) ] )
+}
+
+```
+
+```{r bioMart, echo=FALSE, message=FALSE, warning=FALSE}
+
+archive <- "aug2014.archive"
+shortSpecies <- "hsapiens"
+fullSpecies <- "Homo_sapiens"
+
+mart=useMart(biomart="ENSEMBL_MART_ENSEMBL",
+             host=paste(archive,".ensembl.org",sep=""),dataset=paste(shortSpecies,"_gene_ensembl",sep = ""))
+
+# annotatedGenes <- getBM(attributes = c("ensembl_gene_id","external_gene_name")
+#                  ,uniqueRows = T
+#                  ,mart = mart)
+
+annotatedGenes <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol")
+                 ,uniqueRows = T
+                 ,mart = mart)
+
+# Using "hgnc_symbol" results in EnsemblGeneIDs associated to several names, for example the following with THREE:
+# annotatedGenes[annotatedGenes$ensembl_gene_id=="ENSG00000005102",]
+# as well as EnsemblGeneIDs associated no names as seen with:
+# annotatedGenes[which(annotatedGenes$hgnc_symbol==""),]
+# To eliminate cases without names
+annotatedGenes<-annotatedGenes[which(annotatedGenes$hgnc_symbol!=""),]
+# To eliminate dupicates
+annotatedGenes<-annotatedGenes[-which(duplicated(annotatedGenes$ensembl_gene_id)),]
+
+# Without removing duplicates the following command fails
+rownames(annotatedGenes) <- annotatedGenes$ensembl_gene_id
+
+# It is necessary to change the name of gene name variable for later
+names(annotatedGenes)<-c("ensembl_gene_id","external_gene_name")
+
+geneCardUrl <- "http://www.genecards.org/cgi-bin/carddisp.pl?gene="
+ensemblUrl <-  paste("http://",archive,".ensembl.org/",fullSpecies,"/Gene/Summary?db=core;g=",sep="")
+
+```
+
+# Transcriptomics Kmeans Analysis
+
+## Input Data
+
+We have used DAVID Web analysis tool for functional analysis of clusters using the corresponding human homologue names of the genes in each cluster and the human genome as background.
+
+We have extracted the list of the most relevant "Direct Biological Processes" category for each cluster.
+
+For transcriptomics, a Benjamini adjusted p value of 0.2 and mínimum of 3 genes have been used to filter the enriched processes.
+
+```{r LoadGeneLists, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+# Indicate directory with kmeans cluster files
+inputDir <- "/home/mjgomezr/ANALYSIS/JLPompa/DMacgrogan/BAVTAV/CLUSTERING/KMEANS_CLUSTERS_01/KMEANS_50_REFORMATTED/"
+filePattern <- "r_kmeans_cluster_"
+
+fromFiles <- T
+
+# Variable to group genes by for David Analysis
+groupBy <- "cluster"
+
+if (fromFiles) {
+  
+  # List of files with kmeans analysis
+  inputFiles <- dir(inputDir,pattern = filePattern)
+  
+  groupsList <- list()
+  
+  for (f in mixedsort(inputFiles)) {
+    
+    # Obtain cluster name from file name
+    group <- sub(".txt","",sub(filePattern,"",f))
+    
+    m <- read.delim(file = file.path(inputDir,f),header = T, sep = "\t")
+    
+    m[,groupBy] <- group
+    
+    groupsList[[group]] <- m
+    
+  }
+  
+  # Convert list into data.frame
+  allGroups <- NULL
+  for (group in mixedsort(names(groupsList))) {
+    if (is.null(allGroups)) {
+      allGroups <- groupsList[[group]]
+    } else {
+      allGroups <- rbind(allGroups,groupsList[[group]])
+    }
+  }
+
+} else {
+  
+  inputFile <- dir(inputDir,pattern = filePattern)
+  
+  allGroups <- read.delim(file = file.path(inputDir,inputFile[1]),header = T, sep = "\t")
+  
+}
+
+
+# Cluster Stats
+cct <- table(allGroups[,groupBy])
+cct <- cct[mixedsort(names(cct))]
+
+print(cct)
+sum(cct)
+
+knitr::kable(t(as.matrix(cct)), caption = "Number of Genes per Cluster") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"),position = "center")
+
+# Sort cluster names and convert them to factors
+allGroups[,groupBy] <- factor(allGroups[,groupBy],unique(mixedsort(allGroups[,groupBy])))
+
+# Replace the number with the number of samples
+sampleNames <- colnames(allGroups)[seq(6)]
+
+```
+
+## Functional analysis data
+
+### DAVID Analysis
+
+```{r DAVIDAnalysis, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+# Ensembl Gene ID Column
+GeneIDColumn <- "ensembl_gene_id"
+
+bpDirect <- list()
+
+if (length(dir(file.path(outputDir,"IPA","CP"),pattern = ".txt"))) {
+  tDavidFiles <- paste(file.path(outputDir,"IPA","CP"),dir(file.path(outputDir,"IPA","CP"),pattern = ".txt"),sep="/")
+    # COMMENTED TO FORCE THE SCRIPT USING ONLY BP
+#   tDavidFiles <- c(tDavidFiles,paste(file.path(outputDir,"DAVID","KG"),dir(file.path(outputDir,"DAVID","KG"),pattern = ".txt"),sep="/"))
+  
+  for (f in mixedsort(tDavidFiles)) {
+    # print(f)
+    c <- gsub("_[.\\w]+","",basename(f),perl=T)
+    # BPs <- read.delim(file.path(dir.transcriptomics,"DAVID","BP",f),sep="\t",header=T,as.is = T)
+    info = file.info(f)
+    if (info$size > 4) {
+      BPs <- read.delim(f,sep="\t",header=T,as.is = T)
+      if (is.null(bpDirect[[c]])) {
+        bpDirect[[c]] <- BPs
+      } else {
+        bpDirect[[c]] <- rbind(bpDirect[[c]],BPs)
+      }
+    }
+    
+  }
+} else {
+  # NOTHING IN THIS BLOCK SHOULD BE EXECUTED 
+  dir.create(file.path(outputDir,"DAVID","BP"),showWarnings = T,recursive = T)
+  # dir.create(file.path(outputDir,"DAVID","MF"),showWarnings = T,recursive = T)
+  # COMMENTED TO FORCE THE SCRIPT USING ONLY BP
+#   dir.create(file.path(outputDir,"DAVID","KG"),showWarnings = T,recursive = T)
+  
+  print("Get DAVID analysis from Automatic DAVID WebSerices.")
+  
+  david<-DAVIDWebService(email="ctorroja@cnic.es", url="https://david.ncifcrf.gov/webservice/services/DAVIDWebService.DAVIDWebServiceHttpSoap12Endpoint/")
+  
+  connect(david)
+  
+  for (group in levels(allGroups[,groupBy])) {
+    
+    geneNames <- allGroups[allGroups[,groupBy] == group,GeneIDColumn]
+    geneNames <- geneNames[!is.na(geneNames)]
+    print(paste(group,length(geneNames)))
+    results <- addList(david
+                       ,geneNames
+                       ,idType = "ENSEMBL_GENE_ID"
+                       ,listName = group
+                       ,listType = "Gene"
+    )
+    print(results)
+    Sys.sleep(5)
+    
+  }
+  
+  message(paste("Get","GOTERM_BP_DIRECT","Enrichment"))
+  
+  setAnnotationCategories(david,c("GOTERM_BP_DIRECT"))
+  
+  for (group in levels(allGroups[,groupBy])) {
+    message(paste("Processing Cluster","BP",group))
+    i <- match(group,getGeneListNames(david))
+    setCurrentGeneListPosition(david,position = i)
+    davidData <- getFunctionalAnnotationChart(david, threshold = 0.1, count = 2 )
+    bpDirect[[group]] <- davidData
+    write.table(davidData,file = file.path(outputDir,"DAVID","BP",paste(group,"DAVID","BP.txt",sep = "_")),quote = F,col.names = T,row.names = F,sep = "\t")
+    Sys.sleep(5)
+  }
+  
+  # setAnnotationCategories(david,c("GOTERM_MF_DIRECT"))
+  # 
+  # for (group in levels(allGroups[,groupBy])) {
+  #   message(paste("Processing Cluster","MF",group))
+  #   i <- match(group,getGeneListNames(david))
+  #   setCurrentGeneListPosition(david,position = i)
+  #   davidData <- getFunctionalAnnotationChart(david, threshold = 0.1, count = 2 )
+  #   bpDirect[[group]] <- rbind(bpDirect[[group]],davidData)
+  #   write.table(davidData,file = file.path(outputDir,"DAVID","MF",paste(group,"DAVID","MF.txt",sep = "_")),quote = F,col.names = T,row.names = F,sep = "\t")
+  #   Sys.sleep(5)
+  # }
+  
+  message(paste("Get","KEGG_PATHWAY","Enrichment"))
+  
+  setAnnotationCategories(david,c("KEGG_PATHWAY"))
+  
+  for (group in levels(allGroups[,groupBy])) {
+    message(paste("Processing Cluster","KEGG",group))
+    i <- match(group,getGeneListNames(david))
+    setCurrentGeneListPosition(david,position = i)
+    davidData <- getFunctionalAnnotationChart(david, threshold = 0.1, count = 2 )
+    bpDirect[[group]] <- rbind(bpDirect[[group]],davidData)
+    write.table(davidData,file = file.path(outputDir,"DAVID","KG",paste(group,"DAVID","KG.txt",sep = "_")),quote = F,col.names = T,row.names = F,sep = "\t")
+    Sys.sleep(5)
+  } 
+}
+
+
+
+```
+
+### Clusters Functional Analysis Heatmap
+
+The following heatmap plots represents the degree of overlap between Enriched Functions. The clustering of these functions allows a better interpretation of the results and facilitates the selection of a characteristic subset of GOs as a summary.
+
+Each plot corresponds to the functions enriched in one grouped list of genes.
+
+Some of the clusters are not represented as they do not have any enrichment given the filtering parameters applyed before.
+
+The heatmap at the left of the plot represents the average expression profile of the genes involved in that particular function across the samples. Blue, White and Red for low, middle and high expression. The right panel is a heatmap with the degree of overlap in genes between the functions (purple)
+
+```{r BuildTranscriptDAVIDAndClusterDataExcel, echo=FALSE, message=FALSE, warning=FALSE}
+
+countsColumns <- sampleNames
+GeneIDColumn <- "ensembl_gene_id"
+GeneNameColumn <- "GeneName"
+groupColumn <- groupBy
+
+tde.files <-  data.frame(groupColumn=c(), File=c())
+
+allGroupsGOs <-vector()
+allGroupsGOs <- NULL
+allGroupsGOsAndGenes<-vector()
+allGroupsGOsAndGenes <- NULL
+
+# adjpval <- "Benjamini"
+adjpval <- "PValue"
+
+for (c in names(bpDirect)) {
+
+  BPs <- bpDirect[[c]]
+  BPs$ID <- NA
+  BPs[grep("CANONICAL_PATHWAY",BPs$Category),"ID"] <- gsub("~.+","",BPs[grep("CANONICAL_PATHWAY",BPs$Category),"Term"],perl=T)
+    # COMMENTED TO FORCE THE SCRIPT USING ONLY BP
+#   BPs[grep("KEGG",BPs$Category),"ID"] <- gsub(":.+","",BPs[grep("KEGG",BPs$Category),"Term"],perl=T)
+  BPs[grep("CANONICAL_PATHWAY",BPs$Category),"Term"] <- gsub("GO:\\d+~","",BPs[grep("CANONICAL_PATHWAY",BPs$Category),"Term"],perl=T)
+    # COMMENTED TO FORCE THE SCRIPT USING ONLY BP
+#   BPs[grep("KEGG",BPs$Category),"Term"] <- gsub("\\w+:","",BPs[grep("KEGG",BPs$Category),"Term"],perl=T)
+
+  BPs[,groupColumn] <- c
+
+  if (is.null(allGroupsGOs)) {
+    allGroupsGOs <- BPs
+  } else {
+    allGroupsGOs <- rbind(allGroupsGOs,BPs)
+  }
+
+  BPs <- BPs[,c("Category","ID","Term","Genes","Fold.Enrichment","PValue",adjpval)]
+
+  
+  if (dim(BPs)[1]) {
+    dummyBPs <- apply(BPs,1
+                      , function (x) { 
+                        g <- sub(" ","",unlist(strsplit(x["Genes"],",")))
+                        count <- length(g)
+                        tpms <- allGroups[match(g,allGroups[,GeneIDColumn]),countsColumns]
+                        return(data.frame(
+                          category=rep(x["Category"],count)
+                          , ID=rep(x["ID"],count)
+                          , term=rep(x["Term"],count)
+                          , count=rep(count,count)
+                          , genes=allGroups[match(g,allGroups[,GeneIDColumn]),GeneNameColumn]
+                          , geneID=allGroups[match(g,allGroups[,GeneIDColumn]),GeneIDColumn]
+                          , logFC=rep(NA,count)
+                          , Fold.Enrichment=rep(x["Fold.Enrichment"],count)
+                          , PValue=rep(x["PValue"],count)
+                          , adj_pval=rep(x[adjpval],count)
+                          , zscore=rep(NA,count)
+                          , groupColumn=rep(c,count)
+                          , tpms
+                        )
+                        )
+                      }
+    )
+    dummyDummy <- NULL
+    for (b in 1:length(dummyBPs)) {
+      if (is.null(dummyDummy)) {
+        dummyDummy <- dummyBPs[[b]]
+      } else {
+        dummyDummy <- rbind(dummyDummy,dummyBPs[[b]])  
+      }
+    }
+  } else {
+
+    tpms <- matrix(ncol=length(countsColumns), nrow = 0)
+    colnames(tpms) <-countsColumns
+    dummyDummy <- data.frame(
+      category=character()
+      , ID=character()
+      , term=character()
+      , count=integer()
+      , genes=character()
+      , geneID=character()
+      , logFC=numeric()
+      , Fold.Enrichment=numeric()
+      , PValue=numeric()
+      , adj_pval=numeric()
+      , zscore=numeric()
+      , groupColumn=character()
+      , tpms
+    )
+  }
+  
+  colnames(dummyDummy) <- sub("groupColumn",groupColumn,colnames(dummyDummy))
+    
+  dummyDummy <- dummyDummy[!is.na(dummyDummy[,9]),]
+  if (dim(dummyDummy)[1]) {
+    if (is.null(allGroupsGOsAndGenes)) {
+      allGroupsGOsAndGenes <- dummyDummy
+    }  else {
+      allGroupsGOsAndGenes <- rbind(allGroupsGOsAndGenes, dummyDummy)
+    }
+  }
+}
+
+allGroupsGOs <- data.frame(gsub(" ","",t(apply(allGroupsGOs,1,
+      function (x) {
+        g <- sub(" ","",unlist(strsplit(x["Genes"],",")))
+        gnames <- allGroups[match(g,allGroups[,GeneIDColumn]),GeneNameColumn]
+# COMMENTING THIS AVOIDS CRASHING        
+#          gnames[gnames == ""] <- g[gnames == ""]
+        x["Genes"] <- paste(gnames,collapse=",")
+        return(x)
+      }))))
+
+
+# I AM GOING TO SKIP URL FORMATION TEMPORARILY
+# ORIGINAL LINE
+# naNames <- allGroupsGOsAndGenes[,"genes"] == ""
+# MODIFIED LINE
+# naNames <- is.na(allGroupsGOsAndGenes[,"genes"])
+# allGroupsGOsAndGenes$genes <- paste('=HYPERLINK("',geneCardUrl,allGroupsGOsAndGenes$genes,'","',allGroupsGOsAndGenes$genes,'")',sep="")
+# allGroupsGOsAndGenes$geneID <- paste('=HYPERLINK("',ensemblUrl,allGroupsGOsAndGenes$geneID,'","',allGroupsGOsAndGenes$geneID,'")',sep="")
+# allGroupsGOsAndGenes[naNames,"genes"] <- allGroupsGOsAndGenes[naNames,"geneID"]
+
+WriteXLS(c("allGroupsGOs","allGroupsGOsAndGenes")
+             ,ExcelFileName = file.path(outputDir,"IPA",paste("allGroups_IPA_Analysis",".xlsx",sep=""))
+             ,SheetName=c("IPA_Analysis","CPs&GENES")
+             ,AutoFilter = T,BoldHeaderRow = T,FreezeRow = 1,FreezeCol = 1,verbose = F)
+
+tde.files <- rbind(tde.files,data.frame(groupColumn="All",File=file.path(basename(outputDir),"IPA",paste("allGroups_IPA_Analysis",".xlsx",sep=""))))
+
+tde.files$File <- paste("[",tde.files$File,"]","(",tde.files$File,")",sep="")
+
+colnames(tde.files) <- sub("groupColumn",groupColumn,colnames(tde.files))
+
+knitr::kable(tde.files, caption = "File with Enrichment tables by Groups") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"),position = "center","scale_down")
+```
+
+
+```{r BuildTranscriptDAVIDAndClusterData, echo=FALSE, message=FALSE, warning=FALSE}
+
+countsColumns <- sampleNames
+GeneIDColumn <- "ensembl_gene_id"
+GeneNameColumn <- "GeneName"
+groupColumn <- groupBy
+
+tDavidBPs <- list()
+
+tde.files2 <-  data.frame(groupColumn=c(), File=c())
+
+FilteredTClustersGOs <- NULL
+FilteredTClustersGOsAndGenes <- NULL
+
+# adjpval = "Benjamini"
+# pfilterType = "Benjamini"
+# pfilter <- 0.1
+
+adjpval = "PValue"
+pfilterType <- "PValue"
+pfilter <- 0.05
+
+cfilter <- 2
+maxTerms <- 100
+
+for (c in names(bpDirect)) {
+  
+  BPs <- bpDirect[[c]]
+  BPs$ID <- NA
+  BPs[grep("CANONICAL_PATHWAY",BPs$Category),"ID"] <- gsub("~.+","",BPs[grep("CANONICAL_PATHWAY",BPs$Category),"Term"],perl=T)
+  # COMMENTED TO FORCE THE SCRIPT USING ONLY BP
+#   BPs[grep("KEGG",BPs$Category),"ID"] <- gsub(":.+","",BPs[grep("KEGG",BPs$Category),"Term"],perl=T)
+  BPs[grep("CANONICAL_PATHWAY",BPs$Category),"Term"] <- gsub("GO:\\d+~","",BPs[grep("CANONICAL_PATHWAY",BPs$Category),"Term"],perl=T)
+  # COMMENTED TO FORCE THE SCRIPT USING ONLY BP
+#   BPs[grep("KEGG",BPs$Category),"Term"] <- gsub("\\w+:","",BPs[grep("KEGG",BPs$Category),"Term"],perl=T)
+  
+  BPs <- BPs[which(BPs[,pfilterType] < pfilter & BPs[,"Count"] > cfilter),]
+  
+  if (dim(BPs)[1]) {
+    BPs$cluster <- c
+    
+    if (is.null(FilteredTClustersGOs)) {
+      FilteredTClustersGOs <- BPs
+    } else {
+      FilteredTClustersGOs <- rbind(FilteredTClustersGOs,BPs)
+    }
+    
+
+    BPs <- BPs[,c("Category","ID","Term","Genes","Fold.Enrichment","PValue",adjpval)]
+
+    BPs <- head(BPs,maxTerms)
+    
+    dummyBPs <- apply(BPs,1
+                      , function (x) { 
+                        g <- sub(" ","",unlist(strsplit(x["Genes"],",")))
+                        count <- length(g)
+                        tpms <- allGroups[match(g,allGroups[,GeneIDColumn]),countsColumns]
+                        return(data.frame(
+                          category=rep(x["Category"],count)
+                          , ID=rep(x["ID"],count)
+                          , term=rep(x["Term"],count)
+                          , count=rep(count,count)
+                          , genes=allGroups[match(g,allGroups[,GeneIDColumn]),GeneNameColumn]
+                          , geneID=allGroups[match(g,allGroups[,GeneIDColumn]),GeneIDColumn]
+                          , logFC=rep(NA,count)
+                          , Fold.Enrichment=rep(x["Fold.Enrichment"],count)
+                          , PValue=rep(x["PValue"],count)
+                          , adj_pval=rep(x[adjpval],count)
+                          , zscore=rep(NA,count)
+                          , groupColumn=rep(c,count)
+                          , tpms
+                        )
+                        )
+                      }
+    )
+    dummyDummy <- NULL
+    for (b in 1:length(dummyBPs)) {
+      if (is.null(dummyDummy)) {
+        dummyDummy <- dummyBPs[[b]]
+      } else {
+        dummyDummy <- rbind(dummyDummy,dummyBPs[[b]])  
+      }
+    }
+  } else {
+    
+    tpms <- matrix(ncol=length(countsColumns), nrow = 0)
+    colnames(tpms) <- countsColumns
+    dummyDummy <- data.frame(
+      category=character()
+      , ID=character()
+      , term=character()
+      , count=integer()
+      , genes=character()
+      , geneID=character()
+      , logFC=numeric()
+      , Fold.Enrichment=numeric()
+      , PValue=numeric()
+      , adj_pval=numeric()
+      , zscore=numeric()
+      , groupColumn=character()
+      , tpms
+    )
+  }
+  
+  colnames(dummyDummy) <- sub("groupColumn",groupColumn,colnames(dummyDummy))
+  
+# ORIGINAL LINE
+#   dummyDummy <- dummyDummy[!is.na(dummyDummy[,9]),]
+# MODIFIED LINE: ESSENTIAL TO MAE IT WORK IN THE CURRENT CONTEXT !!!!!!!!!!!!!!!!
+  dummyDummy <- dummyDummy[!is.na(dummyDummy[,6]),]
+
+  if (dim(dummyDummy)[1]) {
+    if (is.null(FilteredTClustersGOsAndGenes)) {
+      FilteredTClustersGOsAndGenes <- dummyDummy
+    }  else {
+      FilteredTClustersGOsAndGenes <- rbind(FilteredTClustersGOsAndGenes, dummyDummy)
+    }
+# COMMENTING THIS AVOIDS CRASHING        
+#     dummyDummy[dummyDummy$genes == "","genes"] <- dummyDummy[dummyDummy$genes == "","geneID"]
+    tDavidBPs[[c]] <- dummyDummy
+  }
+  
+}
+
+FilteredTClustersGOs <- data.frame(gsub(" ","",t(apply(FilteredTClustersGOs,1,
+      function (x) {
+        g <- sub(" ","",unlist(strsplit(x["Genes"],",")))
+        gnames <- allGroups[match(g,allGroups[,GeneIDColumn]),GeneNameColumn]
+# COMMENTING THIS AVOIDS CRASHING        
+#         gnames[gnames == ""] <- g[gnames == ""]
+        x["Genes"] <- paste(gnames,collapse=",")
+        return(x)
+      }))))
+
+
+# I AM GOING TO SKIP URL FORMATION TEMPORARILY
+# naNames <- FilteredTClustersGOsAndGenes[,"genes"] == ""
+
+# FilteredTClustersGOsAndGenes$genes <- paste('=HYPERLINK("',geneCardUrl,FilteredTClustersGOsAndGenes$genes,'","',FilteredTClustersGOsAndGenes$genes,'")',sep="")
+# FilteredTClustersGOsAndGenes$geneID <- paste('=HYPERLINK("',ensemblUrl,FilteredTClustersGOsAndGenes$geneID,'","',FilteredTClustersGOsAndGenes$geneID,'")',sep="")
+
+# FilteredTClustersGOsAndGenes[naNames,"genes"] <- FilteredTClustersGOsAndGenes[naNames,"geneID"]
+
+WriteXLS(c("FilteredTClustersGOs","FilteredTClustersGOsAndGenes")
+             ,ExcelFileName = file.path(outputDir,"IPA",paste("FilteredTClusters_IPAandGENES_",paste(adjpval,sub("\\.","",pfilter),sep=""),".xlsx",sep=""))
+             ,SheetName=c("IPA_Analysis","CPs&GENES")
+             ,AutoFilter = T,BoldHeaderRow = T,FreezeRow = 1,FreezeCol = 1,verbose = F)
+    tde.files2 <- rbind(tde.files2,data.frame(groupColumn="All",File=file.path(basename(outputDir),"IPA",paste("FilteredTClusters_IPAandGENES_",paste(adjpval,sub("\\.","",pfilter),sep=""),".xlsx",sep=""))))
+
+tde.files2$File <- paste("[",tde.files2$File,"]","(",tde.files2$File,")",sep="")
+
+colnames(tde.files2) <- sub("groupColumn",groupColumn,colnames(tde.files2))
+
+knitr::kable(tde.files2, caption = "Files with FILTERED Enriched Terms And Gene Expressions by Transcriptomics cluster") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"),position = "center","scale_down")
+```
+
+\blandscape
+
+```{r tComputeBPOverlaps, echo=FALSE, fig.cap=paste("GO Terms Overlaps by Genes: Cluster",seq(1:20), ". (Degree of overlap in purple. Average Expression profile of genes in cluster in blue, white, red)", "\\href{./Plots/tComputeBPOverlaps-",seq(1:20),".jpeg}{tComputeBPOverlaps-",seq(1:20),".jpeg}",sep=""), fig.height=9, fig.width=14, message=FALSE, warning=FALSE, results="asis"}
+
+countsColumns <- sampleNames
+
+tBPOverlaps <- lapply(tDavidBPs,anyOverlap, category.column = "ID", element.column = "geneID", description.column = "term")
+
+for (group in names(tBPOverlaps)) {
+  if (!is.null(tBPOverlaps[[group]])) {
+    
+    a <- NULL
+    a <- tBPOverlaps[[group]]$omatrix
+    a[lower.tri(a,diag = T)] <- t(a)[lower.tri(a,diag = T)]
+    a <- t(scale(t(a), center = F, scale = F))
+    a[is.na(a)] <- 0
+    rowv<- as.dendrogram(hclust(as.dist(sqrt(2*dim(a)[2]*(1-cor(t(a))))), method="average"))
+    
+    ck <- aggregate(tDavidBPs[[group]][,countsColumns],list(tDavidBPs[[group]]$ID),mean)
+    rownames(ck) <- ck$Group.1
+    ck$Group.1 <- NULL
+    ck <- ck[match(rownames(a),rownames(ck)),]
+    cks <- t(scale(t(ck),scale = T))
+    
+#     tRowSideColors <- apply(cks,2,function (x) { color.gradient(x, colors = rev(brewer.pal(11 , "Spectral" )),colsteps = 100)})
+    tRowSideColors <- apply(cks,2,function (x) { color.gradient(x, colors = rev(brewer.pal(11 , "RdBu" )),colsteps = 100)})
+    trowsep <- cumsum(unlist(lapply(cut(rowv,h = attr(rowv,"height")*0.8)$lower,nobs)))
+    trowsep <- nobs(rowv) - trowsep
+    # PNG output was introduced by MJG
+    png(paste(group,"IPA_CP_overlaps.png",sep="_"),1000,1000)
+#     pdf(paste(group,"IPA_CP_overlaps.pdf",sep="_"),12,12)
+    heatmap.3(a
+             ,Rowv = rowv
+             ,Colv = rowv
+             ,scale = "none"
+             ,trace = "none"
+             ,density.info = "none"
+             ,col=colorRampPalette(c("white","purple"))(100)
+             ,labRow = paste(
+               tDavidBPs[[group]][match(rownames(a),tDavidBPs[[group]]$ID),c("count")]
+               ,tDavidBPs[[group]][match(rownames(a),tDavidBPs[[group]]$ID),c("term")]
+               ,sep = "\t") # FOR PNG
+#               ,sep = " : ")   # FOR PDF
+             ,RowSideColors = as.matrix(t(tRowSideColors))
+             ,RowSideColorsSize = 6
+             ,margins = c(8,25)
+             ,main=paste(as.character(group),sep=" ")
+             ,rowsep = trowsep
+             ,sepcolor = "white"
+             ,sepwidth = c(0.15,0.15)
+    )
+    dev.off()
+  }
+}
+
+
+```
+
+\elandscape
+\newpage
+
+## Correspondance analysis between Transcriptomics Clusters based on functions
+
+Overlaps in genes and enriched GOs between all clusters has been calculated.
+
+Plots represent in purple scale the degree of overlap in genes and in green GOs overlap.
+
+The left heatmap represents the mean profile of the genes of the clusters. Blue, White and Red for low, middle and high expression.
+
+```{r ptClusterOverlaps, echo=FALSE, message=FALSE, warning=FALSE}
+
+groupColumn <- groupBy
+
+fullGOGroupData <- data.frame(ID=c(),term=c(),groupColumn=c())
+for (c in countsColumns) {
+  fullGOGroupData$`c` <- c()
+}
+
+for (group in names(tDavidBPs)) {
+  if (dim(tDavidBPs[[group]])[1]) {
+    goData <- tDavidBPs[[group]][,c("ID","term")]
+    profGoData <- aggregate(tDavidBPs[[group]][,countsColumns],list(goData$ID),mean)
+    goData <- goData[match(unique(sort(goData$ID)),goData$ID),]
+    goData <- cbind(goData,profGoData[match(goData$ID,profGoData$Group.1),-1])
+    
+    fullGOGroupData <- rbind(fullGOGroupData,data.frame(groupColumn=rep(group,dim(goData)[1]),goData))
+  }
+}
+
+fullGOGroupData <- fullGOGroupData[!is.na(fullGOGroupData$ID),]
+
+colnames(fullGOGroupData) <- sub("groupColumn",groupColumn,colnames(fullGOGroupData))
+
+GOGroupsOverlaps <- anyOverlap( data = fullGOGroupData
+                          , category.column = groupColumn
+                          , element.column = "ID"
+                          , description.column = groupColumn
+                          , sort = F
+)
+
+```
+
+```{r HeatMapOverlapGOsByGOs, echo=FALSE, fig.cap=paste("HeatMaps of Kmeans clusters overlap proportions in Genes and Enriched GO Terms clustered by Genes  (Purple GOs Overlaps and Yellow Gene Overlaps)",".", "\\href{./Plots/HeatMapOverlapGOsByGOs-1.jpeg}{HeatMapOverlapGOsByGOs-1.jpeg}",sep=""), fig.height=9, fig.width=14, message=FALSE, warning=FALSE, results="asis"}
+
+groupColumn <- groupBy
+
+a <- GOGroupsOverlaps$omatrix
+a[lower.tri(a,diag = F)] <- a[lower.tri(a,diag = F)] + t(a)[lower.tri(a,diag = F)]
+a[upper.tri(a,diag = F)] <- t(a)[upper.tri(a,diag = F)]
+
+rowv <- as.dendrogram(hclust(as.dist(sqrt(2*dim(a)[2]*(1-cor(t(a))))), method="average"))
+
+ck <- aggregate(allGroups[,sampleNames],list(allGroups[,groupColumn]),mean)
+rownames(ck) <- ck$Group.1
+ck$Group.1 <- NULL
+
+cks <- ck[match(rownames(a),rownames(ck)),]
+cks <- t(scale(t(cks),scale = T))
+#pRowSideColors <- apply(cks,2,function (x) { color.gradient(x, colors = rev(brewer.pal(11 , "Spectral" )),colsteps = 100)})
+pRowSideColors <- apply(cks,2,function (x) { color.gradient(x, colors = rev(brewer.pal(11 , "RdBu" )),colsteps = 100)})
+
+
+negBreaks <- seq(min(a,na.rm = T),0,by = abs(min(a,na.rm = T)/50))
+posBreaks <- seq(0,max(a,na.rm = T),by=max(a,na.rm = T)/50)
+if (length(posBreaks) < 50) {
+  posBreaks <- c(posBreaks,rep(max(a,na.rm = T),50 - length(posBreaks)))
+} else {
+  posBreaks <- posBreaks[1:50]
+}
+
+# png(paste("HeatMapOverlapCPsByCPs.png"),600,600)
+pdf(paste("HeatMapOverlapCPsByCPs.pdf"),10,10)
+heatmap.3(a
+          ,Rowv = rowv #rowv
+          ,Colv = rowv #"Rowv"
+          ,scale = "none"
+          ,trace = "none"
+          ,density.info = "none"
+          ,col=colorRampPalette(c("white","purple"))
+          #,col=colorRampPalette(c("darkgreen","white","purple"))(100)
+          #,main="Kmeans CPs/Genes Overlaps Clustered by Genes"
+          ,main="Kmeans Cluster Pathway Overlaps"
+          ,RowSideColors = as.matrix(t(pRowSideColors))
+          ,RowSideColorsSize = 6
+          ,na.color = "grey90"
+          ,breaks = c(negBreaks
+                      ,posBreaks)
+          ,key=F
+)
+dev.off()
+
+```
+
+\blandscape
+
+```{r rashapeData, echo=FALSE, message=FALSE, warning=FALSE}
+
+geneList <- list()
+goesList <- list()
+
+for (c in names(tDavidBPs)) {
+  
+  for (g in tDavidBPs[[c]]$geneID) {
+    goes <- tDavidBPs[[c]][which(tDavidBPs[[c]]$geneID == g),"ID"]
+    if (!g %in% names(geneList)) {
+      geneList[[g]] <- list("clusters"=c(),"goes"=c())
+    }
+    geneList[[g]][["clusters"]] <- unique(sort(c(geneList[[g]][["clusters"]],c)))
+    geneList[[g]][["goes"]] <- unique(sort(c(geneList[[g]][["goes"]],goes)))
+  }
+  
+  for (go in tDavidBPs[[c]]$ID) {
+    geneID <- tDavidBPs[[c]][which(tDavidBPs[[c]]$ID == go),"genes"]
+    if (!go %in% names(goesList)) {
+      goesList[[go]] <- list("clusters"=c(),"genes"=c())
+    }
+    goesList[[go]][["genes"]] <- unique(sort(c(goesList[[go]][["genes"]],geneID)))
+    goesList[[go]][["clusters"]] <- unique(sort(c(goesList[[go]][["clusters"]],c)))
+  }
+}
+
+```
+
+
+```{r writeNetworkFiles, echo=FALSE, message=FALSE, warning=FALSE}
+
+n <- 0
+
+cat(paste("node","OMIC","genes","Term\n",sep="\t"),file = file.path(outputDir,"cp.ann"))
+
+cat("",file = file.path(outputDir,"network.nnf"))
+
+for (go in names(goesList)) {
+  cat(paste(go,"CP",length(goesList[[go]]$genes),paste(fullGOGroupData[match(go,fullGOGroupData$ID),"term"],"\n",sep=""),sep="\t"),file = file.path(outputDir,"cp.ann"), append = T)
+  if (length(goesList[[go]]$genes) >= 20) {
+    n <- n+1
+    cat(paste(go,goesList[[go]]$genes,sep="\t"),file = file.path(outputDir,"network.nnf"),append = T,sep = "\n")
+    cat(paste("global",go,"im",goesList[[go]]$clusters,sep="\t"),file = file.path(outputDir,"network.nnf"),append = T,sep = "\n")
+  }
+}
+# print(n)
+
+clusterAnn <- as.data.frame(ck)
+clusterAnn$OMIC <- gsub("\\d+","",rownames(clusterAnn),perl=T)
+clusterAnn$genes <- table(allGroups[,groupBy])[rownames(clusterAnn)]
+clusterAnn$node <- rownames(clusterAnn)
+clusterAnn <- clusterAnn[,c("node","OMIC","genes",colnames(ck))]
+write.table(clusterAnn,file = file.path(outputDir,"clusters.ann"),col.names = T, row.names = F, quote = F, sep = "\t" )
+
+geneAnn <- matrix(0,nrow = length(geneList), ncol = dim(clusterAnn)[1]+3, dimnames = list(rownames=c(names(geneList)),colnames=c("node","OMICS","goes",rownames(clusterAnn))))
+for (g in names(geneList)) {
+  geneAnn[g,geneList[[g]]$clusters] <- 1
+  geneAnn[g,"goes"] <- length(geneList[[g]]$goes)
+  geneAnn[g,"OMICS"] <- "ALL"
+  geneAnn[g,"node"] <- g
+}
+geneAnn <- as.data.frame(geneAnn)
+write.table(geneAnn,file = file.path(outputDir,"genes.ann"),col.names = T,quote = F,sep = "\t",row.names = F)
+
+```
+
+# Summary of Results
+
