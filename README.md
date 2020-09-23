@@ -1,6 +1,6 @@
 # CAVD_COMP_PIPELINES
 Computational pipelines for the analysis of RNASeq data in the context of the research project: "Identification of a peripheral blood gene signature
-predicting aortic valve calcification"
+predicting aortic valve calcification".
 
 Pipelines are distributed in four folders:
 1. PREPROCESSING
