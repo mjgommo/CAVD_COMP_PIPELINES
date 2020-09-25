@@ -1,22 +1,22 @@
-# CAVD_COMP_PIPELINES
+# CAVD COMPUTATIONAL PIPELINES
 Computational pipelines for the analysis of RNASeq data in the context of the research project: "Identification of a peripheral blood gene signature
 predicting aortic valve calcification".
 
-Pipelines are distributed in four folders:
+Pipelines are distributed in four directories:
 1. PREPROCESSING
 2. ALIGN_AND_QUANTIFY
 3. DEA_RNASeqEdgeR-4.0.4
 4. CLUSTERING_AND_ANNOTATION
 
 ## PREPROCESSING
-This folder contains a single shell script that calls cutadapt, to eliminate Illumina adapter remains, and FastQC,
+This directory contains a single shell script that calls cutadapt, to eliminate Illumina adapter remains, and FastQC,
 to perform some quality tests on the reads, after preprocessing.
 
 ## ALIGN_AND_QUANTIFY
-This folder contains a single shell script that calls RSEM to align preprocessed reads against a transcriptome reference and quantify gene expression levels.
+This directory contains a single shell script that calls RSEM to align preprocessed reads against a transcriptome reference and quantify gene expression levels.
 
 ## DEA_RNASeqEdgeR-4.0.4
-This folder contains four R scripts that call EdgeR or limma, to normalize gene expression counts estimated by the RSEM pipeline,
+This directory contains four R scripts that call EdgeR or limma, to normalize gene expression counts estimated by the RSEM pipeline,
 and to perform differential expression analysis.
 
 The output consists in the following collection of files:
@@ -29,7 +29,7 @@ differentially expressed (with BH adjusted p_value < 0.05).
 * Several types of diagnostic plots, contained within a folder called "Diagnostics".
 
 ## CLUSTERING_AND_ANNOTATION
-This folder contains three R scripts and one Perl script that identify groups of genes with similar expression profiles, using the kmeans method.
+This directory contains three R scripts and one Perl script that identify groups of genes with similar expression profiles, using the kmeans method.
 In the context of the current research project, gene clusters were manually subject to functional enrichment analyses with the Canonical Pathway
 analysis component of IPA (Qiagen).
 After reformating IPA output files, the last script filters enrichment results and performs a concordance analysis to identify groups of clusters
